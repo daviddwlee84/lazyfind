@@ -76,7 +76,13 @@ func queryTokens(raw string) ([]queryToken, error) {
 	return tokens, nil
 }
 
-var qualifiers = map[string]bool{"type": true, "ext": true, "mtime": true, "after": true, "before": true, "size": true, "hidden": true, "ignored": true, "depth": true}
+var qualifiers = func() map[string]bool {
+	m := map[string]bool{}
+	for _, q := range Qualifiers() {
+		m[q.Name] = true
+	}
+	return m
+}()
 
 func qualifier(t queryToken) (string, string, bool) {
 	if t.literal {

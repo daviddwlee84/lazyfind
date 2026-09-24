@@ -18,11 +18,19 @@ max_results = 5000
 max_matches = 50
 timeout_seconds = 60
 debounce_ms = 200
+auto_search_empty = true
 
 [ui]
 mouse = true
 preview = true
 color = "auto" # honors NO_COLOR; always or never overrides
+initial_focus = "search" # or "results"
+highlight_matches = true
+preview_line_numbers = true
+
+[directory_usage]
+concurrency = 2 # 1–16 background measurements
+timeout_seconds = 60 # per directory, including a wait for a worker slot
 
 [history]
 enabled = true
@@ -57,10 +65,26 @@ alias = "workstation"
 search = "/"
 actions = ":"
 history = "H"
+insert_search = "i"
+complete_query = "ctrl+space"
+preview_lines = "L"
+copy_menu = "y"
+directory_usage = "u"
 ```
 
 `[tools]` can override the executable names/paths `fd`, `rg`, `rga`, `zoxide`, `ssh`.
 Remote executable paths refer to the remote machine. fd falls back to fdfind.
+
+Set `search.auto_search_empty = false` to wait for a keyword or condition instead
+of scanning an empty local query. This does not change the explicit-submit remote
+workflow. `ui.initial_focus = "results"` starts with list navigation; `/` or `i`
+returns to the query. The result limit caps matched rows, not files traversed.
+
+Directory usage is opt-in through `u`, independent of file-size search filters.
+It uses `du -skP .` in each target directory, measures allocated bytes, includes
+hidden/ignored children and does not follow symlinks. Only complete measurements
+are cached, in memory for one TUI session. Recalculate bypasses that cache; neither
+measurements nor their cache are written to history or the XDG preview directory.
 
 ## Actions
 

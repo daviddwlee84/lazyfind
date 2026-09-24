@@ -144,7 +144,7 @@ func TestCustomPreviewActionWorksForHistoryAndChecksExistence(t *testing.T) {
 	}
 	m.resolved = resolved
 	result := previewEffect(t, m.execute("fixture-preview"))
-	if result.err != nil || !strings.Contains(result.text, "first text") || result.resolved.Preview != "fixture-preview" {
+	if result.err != nil || (result.doc == nil || !strings.Contains(result.doc.Opaque, "first text")) || result.resolved.Preview != "fixture-preview" {
 		t.Fatalf("custom preview failed %+v", result)
 	}
 	_, _ = m.Update(result)
@@ -159,7 +159,7 @@ func TestCustomPreviewActionWorksForHistoryAndChecksExistence(t *testing.T) {
 		t.Fatalf("history preview did not revalidate: %+v", result)
 	}
 }
-func TestHistoricalCopyRevalidatesAndRejectsStaleReplies(t *testing.T) {
+func TestHistoricalCopyRemainsOfflineAndRejectsStaleReplies(t *testing.T) {
 	m, p := liveMatchModel(t)
 	m.historical = true
 	if err := os.Remove(p); err != nil {
@@ -171,12 +171,12 @@ func TestHistoricalCopyRevalidatesAndRejectsStaleReplies(t *testing.T) {
 			copied = c
 		}
 	}
-	if copied.err == nil {
-		t.Fatal("missing history path allowed copying")
+	if copied.err != nil || copied.value != p {
+		t.Fatalf("offline historical reference was not copied: %+v", copied)
 	}
 	_, cmd := m.Update(copied)
-	if cmd != nil || !strings.Contains(m.status, "Copy failed") {
-		t.Fatal("failed copy wrote clipboard")
+	if cmd == nil || !strings.Contains(m.status, "Copied ") {
+		t.Fatal("offline historical reference did not produce clipboard command")
 	}
 	m.pendingAction = true
 	m.status = "current"
@@ -213,7 +213,7 @@ func TestPersistentPreviewInvalidationAfterChildAndHiddenPreview(t *testing.T) {
 	}
 	_, cmd := m.Update(childMsg{})
 	second := previewEffect(t, cmd)
-	if second.err != nil || !strings.Contains(second.text, "other text") || m.previewSvc != svc {
+	if second.err != nil || (second.doc == nil || !strings.Contains(second.doc.Opaque, "other text")) || m.previewSvc != svc {
 		t.Fatalf("preview invalidation failed %+v", second)
 	}
 	m.cfg.UI.Preview = false
@@ -228,7 +228,7 @@ func TestPersistentPreviewInvalidationAfterChildAndHiddenPreview(t *testing.T) {
 		t.Fatal("hidden preview wrote cache")
 	}
 	enabled := previewEffect(t, m.command("preview"))
-	if enabled.err != nil || !strings.Contains(enabled.text, "other text") {
+	if enabled.err != nil || (enabled.doc == nil || !strings.Contains(enabled.doc.Opaque, "other text")) {
 		t.Fatalf("enabling preview did not read contents %+v", enabled)
 	}
 }

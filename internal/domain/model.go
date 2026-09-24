@@ -51,6 +51,10 @@ type Match struct {
 	Column    int    `json:"column,omitempty"`
 	Text      string `json:"text,omitempty"`
 	Extracted bool   `json:"extracted,omitempty"`
+	// RawSpan addresses the decoded search line before terminal sanitization.
+	// Spans address the sanitized Text. Older snapshots omit both fields.
+	RawSpan *Span  `json:"raw_span,omitempty"`
+	Spans   []Span `json:"spans,omitempty"`
 }
 type Item struct {
 	ID               string     `json:"id"`

@@ -18,10 +18,10 @@ import (
 
 	"github.com/daviddwlee84/lazyfind/internal/config"
 	"github.com/daviddwlee84/lazyfind/internal/domain"
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 // ErrNotFound distinguishes an unavailable snapshot from a storage failure.
 var ErrNotFound = errors.New("history run not found")
@@ -89,15 +89,49 @@ func (s *Store) open(ctx context.Context, write bool) (*sql.DB, error) {
 	if version > schemaVersion {
 		return fail(fmt.Errorf("history schema version %d is newer than supported version %d; update lazyfind before opening this database", version, schemaVersion))
 	}
+	if version == 0 && !write {
+		return fail(errors.New("history database has not been initialized"))
+	}
+	if write && version < schemaVersion {
+		if err = migrate(ctx, db); err != nil {
+			return fail(err)
+		}
+	}
+	if write {
+		// WAL allows another lazyfind process to read old snapshots while a new
+		// confirmed run is being updated. Unknown schemas were rejected above.
+		if err = enableWAL(ctx, db); err != nil {
+			return fail(fmt.Errorf("enable history WAL: %w", err))
+		}
+		if err = os.Chmod(s.path, 0600); err != nil {
+			return fail(err)
+		}
+	}
+	return db, nil
+}
+
+// migrate takes the SQLite writer lock before rechecking the version, so two
+// independent processes can both open an old database without racing upgrades.
+// Read-only opens deliberately never call it.
+func migrate(ctx context.Context, db *sql.DB) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("lock history migration: %w", err)
+	}
+	defer conn.ExecContext(context.Background(), "ROLLBACK")
+	var version int
+	if err = conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
+	if version > schemaVersion {
+		return fmt.Errorf("history schema version %d is newer than supported version %d; update lazyfind before opening this database", version, schemaVersion)
+	}
 	if version == 0 {
-		if !write {
-			return fail(errors.New("history database has not been initialized"))
-		}
-		tx, e := db.BeginTx(ctx, nil)
-		if e != nil {
-			return fail(e)
-		}
-		if _, e = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS runs (
+		if _, err = conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS runs (
 			id TEXT PRIMARY KEY,
 			started_at INTEGER NOT NULL,
 			captured_at INTEGER NOT NULL,
@@ -107,29 +141,56 @@ func (s *Store) open(ctx context.Context, write bool) (*sql.DB, error) {
 			snapshot BLOB NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS runs_captured ON runs(captured_at DESC);
-		PRAGMA user_version = 1;`); e != nil {
-			_ = tx.Rollback()
-			return fail(fmt.Errorf("initialize history: %w", e))
+		PRAGMA user_version = 1;`); err != nil {
+			return fmt.Errorf("initialize history: %w", err)
 		}
-		if e = tx.Commit(); e != nil {
-			return fail(e)
+		version = 1
+	}
+	if version == 1 {
+		if _, err = conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS deleted_runs (
+			id TEXT PRIMARY KEY,
+			deleted_at INTEGER NOT NULL
+		);
+		PRAGMA user_version = 2;`); err != nil {
+			return fmt.Errorf("migrate history to version 2: %w", err)
 		}
 	}
-	if write {
-		// WAL allows another lazyfind process to read old snapshots while a new
-		// confirmed run is being updated. Unknown schemas were rejected above.
-		if _, err = db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
-			return fail(err)
+	_, err = conn.ExecContext(ctx, "COMMIT")
+	return err
+}
+
+func enableWAL(ctx context.Context, db *sql.DB) error {
+	// journal_mode changes do not consistently honor SQLite's busy_timeout:
+	// another process can be migrating the same newly created database. Retry
+	// that lock conflict with a bounded context instead of losing the save.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for {
+		var mode string
+		err := db.QueryRowContext(ctx, "PRAGMA journal_mode=WAL").Scan(&mode)
+		if err == nil {
+			if mode != "wal" {
+				return fmt.Errorf("unexpected journal mode %q", mode)
+			}
+			return nil
 		}
-		if err = os.Chmod(s.path, 0600); err != nil {
-			return fail(err)
+		var sqliteErr *sqlite.Error
+		if !errors.As(err, &sqliteErr) || sqliteErr.Code()&0xff != 5 { // SQLITE_BUSY
+			return err
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
 		}
 	}
-	return db, nil
 }
 
 // Save upserts one confirmed run. It preserves a pin applied between partial
-// and final snapshots. A failure is returned without affecting the live search.
+// and final snapshots. Deleted IDs are ignored, including late saves from
+// another process. A failure is returned without affecting the live search.
 func (s *Store) Save(ctx context.Context, run domain.Run) error {
 	if !s.cfg.History.Enabled {
 		return nil
@@ -163,11 +224,12 @@ func (s *Store) Save(ctx context.Context, run domain.Run) error {
 	defer db.Close()
 	finalized := run.FinishedAt != nil || (run.Status != "" && run.Status != "running" && run.Status != "searching")
 	_, err = db.ExecContext(ctx, `INSERT INTO runs(id,started_at,captured_at,finalized,pinned,summary,snapshot)
-		VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+		SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM deleted_runs WHERE id=?)
+		ON CONFLICT(id) DO UPDATE SET
 		started_at=excluded.started_at,captured_at=excluded.captured_at,
 		finalized=excluded.finalized,summary=excluded.summary,snapshot=excluded.snapshot
 		WHERE excluded.captured_at>=runs.captured_at AND excluded.finalized>=runs.finalized`,
-		run.ID, run.StartedAt.UnixNano(), run.CapturedAt.UnixNano(), boolInt(finalized), boolInt(run.Pinned), summary, snapshot)
+		run.ID, run.StartedAt.UnixNano(), run.CapturedAt.UnixNano(), boolInt(finalized), boolInt(run.Pinned), summary, snapshot, run.ID)
 	if err != nil {
 		return fmt.Errorf("save history: %w", err)
 	}
@@ -204,17 +266,25 @@ func (s *Store) bounded(run domain.Run) domain.Run {
 		for j := range item.Matches {
 			match := &item.Matches[j]
 			if match.Text == "" {
+				match.Spans = nil
 				continue
 			}
 			before := match.Text
+			if !utf8.ValidString(match.Text) {
+				// Current searches store sanitized text. Repair legacy or imported
+				// snapshots without guessing spans after byte offsets change.
+				match.Text = strings.ToValidUTF8(match.Text, "�")
+				match.Spans = nil
+			}
 			if snippets >= s.cfg.History.SnippetsPerItem || remaining <= 0 || s.cfg.History.SnippetBytes <= 0 {
 				match.Text = ""
+				match.Spans = nil
 			} else {
 				budget := s.cfg.History.SnippetBytes
 				if remaining < budget {
 					budget = remaining
 				}
-				match.Text = clipUTF8(match.Text, budget)
+				match.Text, match.Spans = domain.ClipSpans(match.Text, match.Spans, budget)
 				remaining -= len(match.Text)
 				snippets++
 			}
@@ -297,7 +367,41 @@ func (s *Store) Pin(ctx context.Context, id string, pinned bool) error {
 	return s.mutateExisting(ctx, "UPDATE runs SET pinned=? WHERE id=?", boolInt(pinned), id)
 }
 func (s *Store) Delete(ctx context.Context, id string) error {
-	return s.mutateExisting(ctx, "DELETE FROM runs WHERE id=?", id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := os.Stat(s.path); errors.Is(err, os.ErrNotExist) {
+		return ErrNotFound
+	} else if err != nil {
+		return err
+	}
+	db, err := s.open(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// DELETE is the transaction's first statement, acquiring the writer lock
+	// before any snapshot is read. A concurrent Save either precedes this
+	// deletion or observes the tombstone committed alongside it.
+	result, err := tx.ExecContext(ctx, "DELETE FROM runs WHERE id=?", id)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	if _, err = tx.ExecContext(ctx, "INSERT INTO deleted_runs(id,deleted_at) VALUES(?,?) ON CONFLICT(id) DO NOTHING", id, time.Now().UnixNano()); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Store) mutateExisting(ctx context.Context, query string, args ...any) error {
 	s.mu.Lock()
@@ -366,17 +470,4 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
-}
-func clipUTF8(value string, max int) string {
-	value = strings.ToValidUTF8(value, "�")
-	if len(value) <= max {
-		return value
-	}
-	if max <= 0 {
-		return ""
-	}
-	for max > 0 && !utf8.RuneStart(value[max]) {
-		max--
-	}
-	return value[:max]
 }

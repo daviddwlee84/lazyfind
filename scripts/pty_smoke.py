@@ -7,6 +7,7 @@ The small terminal tracker is an ASCII assertion aid, not a visual glyph oracle.
 """
 
 import argparse
+import base64
 import codecs
 import errno
 import fcntl
@@ -265,6 +266,13 @@ class Session:
         # Wire coordinates are one-based. Include separate press and release.
         self.send(f"\x1b[<0;{x};{y}M\x1b[<0;{x};{y}m")
 
+    def click_text(self, text):
+        for y, line in enumerate(self.screen.lines):
+            if text in line:
+                self.click(line.index(text) + max(1, len(text) // 2), y + 1)
+                return
+        raise AssertionError(f"No clickable text {text!r}\n{self.screen.text}")
+
     def close(self):
         if self.poll() is None:
             os.killpg(self.pid, signal.SIGTERM)
@@ -355,9 +363,9 @@ def exercise(binary, artifacts):
             events.append("printable shortcuts stay text while input is focused")
 
             session.send("?")
-            session.text("Help — Esc closes")
+            session.text("Help ·")
             session.click(12, 2)
-            session.text("Help — Esc closes")
+            session.text("Help ·")
             session.send("\x1b")
             session.text("Sources")
             session.send("S")
@@ -427,6 +435,7 @@ def exercise(binary, artifacts):
             if any("jkhq" in run["query"]["raw"] for run in runs):
                 raise AssertionError("unaccepted keystrokes polluted history")
             events.append("accepted searches persist; intermediate typing does not")
+            events.extend(exercise_patch(binary, base, env, config_dir, artifacts))
             if artifacts:
                 artifacts.mkdir(parents=True, exist_ok=True)
                 (artifacts / "transcript.ansi").write_bytes(session.raw)
@@ -439,6 +448,239 @@ def exercise(binary, artifacts):
             raise
         finally:
             session.close()
+    return events
+
+
+def exercise_patch(binary, base, inherited_env, config_dir, artifacts):
+    """Check patch interactions against real tools, tracing expensive calls."""
+    events = []
+    fixture = base / "patch-fixture"
+    fixture.mkdir()
+    (fixture / "needle-guide.md").write_text("needle first\nplain middle\nneedle third\n")
+    (fixture / "needle-plan.md").write_text("needle plan\n")
+    (fixture / "notes.txt").write_text("unrelated notes\n")
+    for directory in ("archive", "downloads"):
+        (fixture / directory).mkdir()
+        (fixture / directory / "payload.bin").write_bytes(b"x" * 8192)
+    trace = base / "tool-trace.jsonl"
+    delay_du = base / "delay-du"
+    tools_dir = base / "tools"
+    tools_dir.mkdir()
+    real_tools = {"fd": shutil.which("fd") or shutil.which("fdfind"), "rg": shutil.which("rg"), "du": shutil.which("du")}
+    for tool, real in real_tools.items():
+        if not real:
+            raise RuntimeError(f"PTY patch verification requires installed {tool}")
+        wrapper = tools_dir / tool
+        wrapper.write_text(
+            f"#!{sys.executable}\n"
+            "import json,os,sys,time\n"
+            f"with open({str(trace)!r},'a') as out:\n"
+            f" out.write(json.dumps({{'tool':{tool!r},'argv':sys.argv[1:],'cwd':os.getcwd()}})+'\\n')\n"
+            f"if {tool!r}=='du' and os.path.exists({str(delay_du)!r}): time.sleep(5)\n"
+            f"os.execv({real!r},[{real!r}]+sys.argv[1:])\n"
+        )
+        wrapper.chmod(0o700)
+    env = inherited_env.copy()
+    env.pop("NO_COLOR", None)
+    env["PATH"] = str(tools_dir) + os.pathsep + env.get("PATH", "")
+    (config_dir / "config.toml").write_text(
+        "[tools]\n" + f"fd={json.dumps(str(tools_dir / 'fd'))}\nrg={json.dumps(str(tools_dir / 'rg'))}\n"
+        "[ui]\ncolor='always'\nmouse=true\ninitial_focus='results'\n"
+        "highlight_matches=true\npreview_line_numbers=true\n"
+        "[search]\nauto_search_empty=false\n"
+    )
+
+    def calls(tool=None):
+        records = [json.loads(line) for line in trace.read_text().splitlines()] if trace.exists() else []
+        # Capability checks do not search the fixture and are not expensive
+        # traversal/matching calls.
+        return [record for record in records if (tool is None or record["tool"] == tool)
+                and "--version" not in record["argv"]]
+
+    def history_runs():
+        return json.loads(subprocess.check_output([binary, "history", "list", "--json"], env=env, cwd=fixture))
+
+    session = Session([binary, str(fixture)], env, str(fixture))
+    try:
+        session.text("empty-query automatic search disabled")
+        session.pump(0.5)
+        if calls("fd") or calls("rg"):
+            raise AssertionError(f"idle startup searched: {calls()}")
+        session.send("j")
+        if "j" in session.screen.lines[1]:
+            raise AssertionError("results startup interpreted navigation as search text")
+        events.append("results startup and disabled empty automatic search perform no backend work")
+
+        session.send("i\x00")
+        session.text("Conditions ·")
+        session.text("ext:")
+        session.send("\x1b[B\r")  # type → ext qualifier
+        session.text("ext:")
+        session.send("md\r")
+        session.expect("completion inserts ext:md", lambda screen: "ext:md" in screen.lines[1])
+        session.send("\r")
+        session.text("complete · 2 results")
+        events.append("Ctrl+Space qualifier and value completion insert an executable ext:md query")
+
+        session.send("/\x01\x0bneedle ext:md")
+        session.send("\x1b")  # close the qualifier value popup
+        session.send("\r")
+        session.text("complete · 2 results")
+        session.text("needle first")
+        session.expect("native preview line numbers", lambda screen: re.search(r"\b1\s*│ needle first", screen.text))
+        # Lip Gloss uses ANSI yellow (3) for the exact match region, with a
+        # reset immediately after the keyword. This rejects whole-row color.
+        yellow = re.compile(rb"\x1b\[(?:[0-9;]*;)?(?:43|48;5;3)(?:;[0-9;]*)?mneedle\x1b\[[0-9;]*m")
+        if not yellow.search(session.raw):
+            raise AssertionError("no exact yellow ANSI highlight around needle")
+        session.send("L")
+        session.text("needle first")
+        if re.search(r"\b1\s*│ needle first", session.screen.text):
+            raise AssertionError("preview line numbers remained after L")
+        session.send("L")
+        session.expect("line numbers restored", lambda screen: re.search(r"\b1\s*│ needle first", screen.text))
+        events.append("yellow highlights wrap the exact match and L toggles native preview line numbers")
+
+        session.pump(0.3)
+        searches = (len(calls("fd")), len(calls("rg")))
+        session.send("\x06guide")
+        session.text("needle-guide.md")
+        session.expect("current-results filter leaves one row", lambda screen: "1/2" in screen.text or "1 / 2" in screen.text)
+        session.pump(0.4)
+        if searches != (len(calls("fd")), len(calls("rg"))):
+            raise AssertionError("Ctrl+F reran a search backend")
+        session.send("\x01\x0b\x1b")
+        session.text("needle-plan.md")
+        events.append("Ctrl+F filters loaded results without restarting fd or rg")
+
+        session.send(":")
+        session.text("Actions —")
+        if "Search" not in session.screen.lines[1]:
+            raise AssertionError("Actions popup erased background search context")
+        session.send("Copy")
+        session.send("\r")
+        session.text("Copy")
+        session.text("Absolute path")
+        session.text("Relative path")
+        session.send("\x1b")
+        session.text("Actions —")
+        session.send("\x1b")
+        session.send("y\x1b[B\x1b[B\x1b[B\r")
+        session.text("Copied needle-guide.md:1")
+        if base64.b64encode(b"needle-guide.md:1") not in session.raw:
+            raise AssertionError("copy did not send the selected root-relative native location to the terminal clipboard")
+        session.send("?")
+        session.text("Help ·")
+        session.text("FLOW")
+        session.click(12, 2)
+        session.text("Help ·")
+        session.send("mtime")
+        session.text("mtime:")
+        session.resize(40, 12)
+        session.text("Help ·")
+        session.click(1, 1)
+        session.text("Help ·")
+        session.resize(120, 32)
+        session.text("mtime:")
+        session.send("\x1b")
+        session.text("needle-guide.md")
+        events.append("centered Actions/Copy and searchable Help preserve background and isolate mouse input")
+
+        # Both accepted ext queries exist; deleting one must return to the same
+        # filtered history list, leaving its neighboring ext query visible.
+        session.send("H")
+        session.text("History")
+        session.send("ext:md")
+        session.text("needle ext:md")
+        before = history_runs()
+        target = next(run for run in before if run["query"]["raw"] == "needle ext:md")
+        session.send("\x04")
+        session.text("Delete")
+        session.send("\r")  # default confirmation choice must be Cancel
+        session.text("History")
+        if not any(run["id"] == target["id"] for run in history_runs()):
+            raise AssertionError("default confirmation deleted history")
+        session.click_text("[Delete]")
+        session.text("Delete")
+        session.send("\x1b[B\r")
+        session.text("History entry deleted")
+        session.text("History")
+        session.text("ext:md")
+        if any(run["id"] == target["id"] for run in history_runs()):
+            raise AssertionError("confirmed history deletion retained selected run")
+        session.send("\x1b")
+        events.append("history deletion defaults to Cancel, then deletes only the selected run and returns to filtered history")
+
+        session.send("/\x01\x0btype:dir")
+        session.send("\x1b")
+        session.send("\r")
+        session.text("complete · 2 results")
+        session.text("archive")
+        session.send("u")
+        session.text("recursive; may be slow")
+        session.text("Calculate visible directories (2)")
+        session.send("\r")
+        session.text("Disk usage 1/1")
+        session.pump(0.3)
+        if len(calls("du")) != 1:
+            raise AssertionError(f"selected directory usage calls: {calls('du')}")
+        session.send("u\r")
+        session.text("Disk usage 1/1")
+        session.pump(0.3)
+        if len(calls("du")) != 1:
+            raise AssertionError("session cache reran du")
+        session.send("u\x1b[B\r")
+        session.text("Disk usage 2/2")
+        session.pump(0.3)
+        if len(calls("du")) != 2:
+            raise AssertionError("visible directory batch did not reuse completed session measurement")
+        session.send("/\x01\x0bnotes\r")
+        session.text("complete · 1 results")
+        session.send("/\x01\x0btype:dir")
+        session.send("\x1b")
+        session.send("\r")
+        session.text("complete · 2 results")
+        session.send("u\r")
+        session.text("Disk usage 1/1")
+        session.pump(0.3)
+        if len(calls("du")) != 2:
+            raise AssertionError("changing query discarded the directory session cache")
+        delay_du.touch()
+        session.send("u\x1b[B\x1b[B\r")
+        session.expect("forced directory measurement starts", lambda screen: len(calls("du")) == 3)
+        session.send("\x1b")
+        session.text("Directory usage canceled")
+        delay_du.unlink()
+        session.send("u\r")
+        session.text("Disk usage 1/1")
+        session.pump(0.3)
+        if len(calls("du")) != 4:
+            raise AssertionError("cancelled forced measurement incorrectly returned an old cached value")
+        events.append("on-demand du measures selected/visible directories, reuses session cache, forces refresh and cancels")
+
+        session.send("q")
+        deadline = time.monotonic() + 10
+        while session.poll() is None and time.monotonic() < deadline:
+            session.pump(0.05)
+        if session.poll() != 0:
+            raise AssertionError(f"patch-session quit status: {session.exit_status}")
+        if any(run["id"] == target["id"] for run in history_runs()):
+            raise AssertionError("deleted history was resurrected by final save")
+        events.append("deleted history remains absent after later queries and quit")
+        if artifacts:
+            artifacts.mkdir(parents=True, exist_ok=True)
+            (artifacts / "patch-transcript.ansi").write_bytes(session.raw)
+            (artifacts / "tool-trace.jsonl").write_bytes(trace.read_bytes())
+    except Exception:
+        if artifacts:
+            artifacts.mkdir(parents=True, exist_ok=True)
+            (artifacts / "patch-failure.ansi").write_bytes(session.raw)
+            (artifacts / "patch-failure-screen.txt").write_text(session.screen.text)
+            if trace.exists():
+                (artifacts / "tool-trace.jsonl").write_bytes(trace.read_bytes())
+        raise
+    finally:
+        session.close()
     return events
 
 

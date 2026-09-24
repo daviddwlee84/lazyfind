@@ -216,7 +216,7 @@ func (s *Service) builtins(item domain.Item) map[string]config.Action {
 		"yazi":    {ID: "yazi", Label: "Reveal in Yazi", Argv: []string{"yazi", "{path}"}, Cwd: "{dir}", Mode: "suspend"},
 		"lazygit": {ID: "lazygit", Label: "Open Lazygit", Argv: []string{"lazygit", "-p", "{git_root}"}, Cwd: "{git_root}", Mode: "suspend"},
 		"glow":    {ID: "glow", Label: "Read Markdown", Argv: []string{"glow", "-p", "{path}"}, Cwd: "{dir}", Mode: "suspend"},
-		"bat":     {ID: "bat", Label: "Preview with bat", Argv: []string{"bat", "--color=never", "--style=numbers", "--paging=never", "--line-range=" + lineRange, "--", "{path}"}, Cwd: "{dir}", Mode: "preview"},
+		"bat":     {ID: "bat", Label: "Preview with bat", Argv: []string{"bat", "--no-config", "--color=never", "--style=plain", "--decorations=never", "--paging=never", "--wrap=never", "--tabs=0", "--strip-ansi=never", "--line-range=" + lineRange, "--", "{path}"}, Cwd: "{dir}", Mode: "preview"},
 		"open":    {ID: "open", Label: "Open with system app", Argv: opener, Cwd: "{dir}", Mode: "detach", Location: "local"},
 		"copy":    {ID: "copy", Label: "Copy path", Mode: "internal"},
 		"shell":   {ID: "shell", Label: "Open shell here", Argv: []string{shell}, Cwd: "{dir}", Mode: "suspend"},

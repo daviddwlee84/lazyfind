@@ -11,7 +11,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/daviddwlee84/lazyfind/internal/domain"
 	"github.com/daviddwlee84/lazyfind/internal/transport"
@@ -78,14 +77,8 @@ func readRecord(r *bufio.Reader) ([]byte, error) {
 }
 func snippet(s string) string {
 	s = strings.TrimRight(s, "\r\n")
-	if len(s) > 2048 {
-		s = s[:2048]
-		for !utf8.ValidString(s) && len(s) > 0 {
-			s = s[:len(s)-1]
-		}
-		s += "…"
-	}
-	return domain.Display(s)
+	s, _ = domain.SanitizeSpans(s, nil, 2048)
+	return s
 }
 func (s *Service) content(ctx context.Context, q domain.QuerySpec, tool, source string, items []domain.Item, maxMatches int, c *collector) error {
 	argv := []string{tool, "--json", "--no-config", "--color=never", "--smart-case", "--line-number", "--with-filename", "--max-count", strconv.Itoa(maxMatches + 1)}
@@ -143,7 +136,7 @@ func (s *Service) content(ctx context.Context, q domain.QuerySpec, tool, source 
 				if err != nil {
 					return fmt.Errorf("decode %s text: %w", source, err)
 				}
-				text = snippet(text)
+				text = strings.TrimRight(text, "\r\n")
 				n := len(event.Data.Submatches)
 				if n == 0 {
 					n = 1
@@ -155,10 +148,16 @@ func (s *Service) content(ctx context.Context, q domain.QuerySpec, tool, source 
 						break
 					}
 					col := 1
+					var rawSpan *domain.Span
+					var rawSpans []domain.Span
 					if i < len(event.Data.Submatches) {
 						col = event.Data.Submatches[i].Start + 1
+						sub := event.Data.Submatches[i]
+						rawSpan = &domain.Span{Start: sub.Start, End: sub.End}
+						rawSpans = []domain.Span{*rawSpan}
 					}
-					item.Matches = append(item.Matches, domain.Match{Source: source, Line: event.Data.LineNumber, Column: col, Text: text, Extracted: source == "documents"})
+					display, spans := domain.SanitizeSpans(text, rawSpans, 2048)
+					item.Matches = append(item.Matches, domain.Match{Source: source, Line: event.Data.LineNumber, Column: col, Text: display, RawSpan: rawSpan, Spans: spans, Extracted: source == "documents"})
 				}
 				pending[p] = item
 			case "end":

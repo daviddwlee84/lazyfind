@@ -1,5 +1,34 @@
 # Verification — 2026-09-24
 
+## v0.1.1 patch status
+
+Final integration passed on macOS arm64 with Go 1.27.0:
+
+- `go test -race ./...` and `go vet ./...`: all packages passed.
+- `make build VERSION=v0.1.1`: built successfully; `--version` reports `v0.1.1`.
+- Documented TOML parsed successfully; retained defaults were checked.
+- Expanded real PTY harness: all 18 scenario groups passed.
+- `gofmt -l` and `git diff --check`: clean.
+
+The additional PTY coverage verifies idle startup without backend processes,
+Ctrl+Space conditions, exact yellow match regions, line-number toggling,
+backend-free Ctrl+F, nested popups and OSC52 path:line copying, history delete
+cancel/confirm without resurrection, and manual directory usage/cache/refresh/cancel.
+Fixtures use isolated XDG paths; no personal host or clipboard was used.
+
+The v0.1.0 results below describe baseline commit `bd4bb7c`.
+
+Targeted checks completed during implementation:
+
+- `go test -race ./internal/version`: injected/module/development version precedence.
+- `go test -race ./internal/usage`: real BSD du and GNU gdu against temporary
+  fixtures, hidden/ignored content, symlinks, newline paths, fake SSH, cancellation,
+  concurrency, overflow and session-cache behavior.
+- History/action race tests and ten repetitions of concurrent history startup,
+  migration and deletion cases passed; see the [SQLite busy pitfall](../pitfalls/history-database-is-locked.md).
+
+## v0.1.0 baseline
+
 Environment: macOS arm64, Go 1.27.0, fd 10.3.0, ripgrep 15.1.0.
 
 ## Automated checks

@@ -17,6 +17,7 @@ import (
 	"github.com/daviddwlee84/lazyfind/internal/history"
 	"github.com/daviddwlee84/lazyfind/internal/preview"
 	"github.com/daviddwlee84/lazyfind/internal/search"
+	"github.com/daviddwlee84/lazyfind/internal/usage"
 )
 
 type debounceMsg int
@@ -30,6 +31,7 @@ type previewMsg struct {
 	id, text string
 	resolved actions.Resolved
 	err      error
+	doc      *preview.Document
 }
 type copiedMsg struct {
 	gen       int
@@ -69,13 +71,19 @@ type choice struct {
 	disabled     bool
 }
 type overlay struct {
-	kind, title      string
-	choices          []choice
-	selected, offset int
-	input            textinput.Model
-	fields           []textinput.Model
-	field            int
-	runs             []domain.Run
+	kind, title              string
+	choices                  []choice
+	selected, offset         int
+	input                    textinput.Model
+	fields                   []textinput.Model
+	field                    int
+	runs                     []domain.Run
+	parent                   *overlay
+	replaceStart, replaceEnd int
+	copyItem                 *domain.Item
+	copyRoots                []string
+	copyMatch                int
+	usageItems, usageVisible []domain.Item
 }
 type Model struct {
 	ctx                                    context.Context
@@ -91,6 +99,7 @@ type Model struct {
 	matchItemID                            string
 	matchIndex                             int
 	previewBody, previewOverride           string
+	previewDoc                             *preview.Document
 	actionSvc                              *actions.Service
 	previewSvc                             *preview.Service
 	sort                                   string
@@ -111,6 +120,13 @@ type Model struct {
 	picked                                 *domain.Item
 	pendingAction                          bool
 	pendingG                               bool
+	actionsGen                             int
+	usageSvc                               *usage.Service
+	usageValues                            map[string]usage.Result
+	usageCancel                            context.CancelFunc
+	usageGen, usageDone, usageTotal        int
+	usageRunning                           bool
+	panel                                  bool
 }
 
 func New(ctx context.Context, cfg config.Config, q domain.QuerySpec, pick bool) *Model {
@@ -127,12 +143,18 @@ func New(ctx context.Context, cfg config.Config, q domain.QuerySpec, pick bool) 
 	v := viewport.New()
 	v.MouseWheelEnabled = false
 	v.SoftWrap = true
-	return &Model{ctx: ctx, cfg: cfg, actionSvc: actions.New(cfg), previewSvc: preview.New(cfg), query: q, input: in, filter: f, items: map[string]domain.Item{}, sort: "name", width: 100, height: 30, viewport: v, mouse: cfg.UI.Mouse, pick: pick, status: "Type a keyword • names + text"}
+	m := &Model{ctx: ctx, cfg: cfg, actionSvc: actions.New(cfg), previewSvc: preview.New(cfg), usageSvc: usage.New(cfg), usageValues: map[string]usage.Result{}, query: q, input: in, filter: f, items: map[string]domain.Item{}, sort: "name", width: 100, height: 30, viewport: v, mouse: cfg.UI.Mouse, pick: pick, status: "Type a keyword • names + text"}
+	if cfg.UI.InitialFocus == "results" {
+		m.focus = 1
+		m.input.Blur()
+	}
+	return m
 }
 func Run(ctx context.Context, cfg config.Config, q domain.QuerySpec, pick bool) (*domain.Item, error) {
 	m := New(ctx, cfg, q, pick)
 	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithOutput(os.Stderr))
 	_, err := p.Run()
+	m.cancelUsage()
 	if m.cancel != nil {
 		m.cancel()
 	}
@@ -183,6 +205,10 @@ func (m *Model) start(accept bool) tea.Cmd {
 		m.status = err.Error()
 		return nil
 	}
+	if !accept && !m.cfg.Search.AutoSearchEmpty && !domain.HasSearchIntent(q) {
+		return m.idleQuery(q)
+	}
+	m.cancelUsage()
 	parentID := m.nextParentID
 	if parentID == "" && m.historical {
 		parentID = m.run.ID
@@ -207,6 +233,7 @@ func (m *Model) start(accept bool) tea.Cmd {
 	m.matchIndex = 0
 	m.previewOverride = ""
 	m.previewBody = ""
+	m.previewDoc = nil
 	m.run = domain.Run{}
 	m.status = "Searching…"
 	m.resolved = actions.Resolved{}
@@ -279,6 +306,7 @@ func (m *Model) finalSnapshot() domain.Run {
 // retire captures a confirmed generation before its stream is abandoned.
 // Historical snapshots are immutable: navigation and actions never resave them.
 func (m *Model) retire() tea.Cmd {
+	m.cancelUsage()
 	var cmd tea.Cmd
 	if m.accepted && !m.historical && m.run.ID != "" {
 		r := m.finalSnapshot()
@@ -321,7 +349,7 @@ func (m *Model) accept() tea.Cmd {
 	return m.save()
 }
 func (m *Model) submit() tea.Cmd {
-	if m.dirty {
+	if m.dirty || (m.run.ID == "" && !m.searching) {
 		return m.start(true)
 	}
 	return m.accept()
@@ -341,7 +369,7 @@ func (m *Model) rebuild() {
 			m.rows = append(m.rows, i)
 		}
 	}
-	domain.SortItems(m.rows, m.sort, m.desc)
+	m.sortRows()
 	m.selected = min(m.selected, max(0, len(m.rows)-1))
 	for n, i := range m.rows {
 		if i.ID == old {
@@ -380,6 +408,7 @@ func (m *Model) selectRow(n int) tea.Cmd {
 func (m *Model) loadPreview() tea.Cmd { return m.loadPreviewAction("", false) }
 
 func (m *Model) loadPreviewAction(override string, allowHistorical bool) tea.Cmd {
+	m.previewDoc = nil
 	m.previewGen++
 	gen := m.previewGen
 	if m.previewCancel != nil {
@@ -396,18 +425,8 @@ func (m *Model) loadPreviewAction(override string, allowHistorical bool) tea.Cmd
 	}
 	m.viewport.GotoTop()
 	if m.historical && !allowHistorical {
-		var b strings.Builder
-		fmt.Fprintf(&b, "Historical snapshot — %s\n%s\n\n", m.run.CapturedAt.Format(time.RFC3339), domain.Display(item.Path))
-		for _, hit := range item.Matches {
-			locator := "line"
-			if hit.Extracted {
-				locator = "extracted line"
-			}
-			fmt.Fprintf(&b, "%s %s %d  %s\n", hit.Source, locator, hit.Line, domain.Display(hit.Text))
-		}
-		b.WriteString("\nEnter / : revalidate before an action.\nCtrl+R searches again.")
-		m.previewBody = b.String()
-		m.viewport.SetContent(m.decoratePreview(m.previewBody))
+		m.previewDoc = &preview.Document{Metadata: fmt.Sprintf("Historical snapshot — %s\n%s", m.run.CapturedAt.Format(time.RFC3339), domain.Display(item.Path)), Snippets: item.Matches, Opaque: "Copy references offline with y.\nCtrl+R searches again."}
+		m.refreshPreview()
 		return nil
 	}
 	m.previewBody = "Loading preview…"
@@ -434,8 +453,8 @@ func (m *Model) loadPreviewAction(override string, allowHistorical bool) tea.Cmd
 		if !readPreview {
 			return previewMsg{gen: gen, id: item.ID, text: "Preview hidden. Toggle preview to load file contents.", resolved: resolved}
 		}
-		text, err := previewSvc.LoadResolved(ctx, *item, q, resolved)
-		return previewMsg{gen: gen, id: item.ID, text: text, resolved: resolved, err: err}
+		doc, err := previewSvc.LoadDocument(ctx, *item, q, resolved)
+		return previewMsg{gen: gen, id: item.ID, doc: &doc, resolved: resolved, err: err}
 	}
 }
 
@@ -503,11 +522,8 @@ func (m *Model) decoratePreview(body string) string {
 	item := m.current()
 	if item != nil && len(item.Matches) > 0 {
 		index := max(0, min(m.matchIndex, len(item.Matches)-1))
-		text := domain.Display(item.Matches[index].Text)
-		chars := []rune(text)
-		if len(chars) > 512 {
-			text = string(chars[:512]) + "…"
-		}
+		text, spans := domain.ClipSpans(item.Matches[index].Text, item.Matches[index].Spans, 512)
+		text = m.highlight(text, spans, false)
 		if text != "" {
 			header += "\n" + text
 		}
@@ -526,8 +542,16 @@ func (m *Model) navigateMatch(delta int) tea.Cmd {
 }
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
+	case usageMsg:
+		return m, m.receiveUsage(v)
+	case deletedMsg:
+		return m, m.historyDeleted(v)
 	case actionsMsg:
-		if m.overlay == nil || m.overlay.kind != "actions" || v.gen != m.gen || v.id != m.selection {
+		target := m.overlay
+		for target != nil && target.kind != "actions" {
+			target = target.parent
+		}
+		if target == nil || v.gen != m.gen || v.dialog != m.actionsGen || v.id != m.selection {
 			return m, nil
 		}
 		if v.err != nil {
@@ -535,13 +559,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.resolved = v.resolved
-		m.overlay.choices = nil
+		target.choices = m.commonActions()
 		for _, a := range v.resolved.Actions {
 			label := a.Label
 			if !a.Available {
 				label += " — " + a.Reason
 			}
-			m.overlay.choices = append(m.overlay.choices, choice{label: label, value: a.ID, disabled: !a.Available})
+			target.choices = append(target.choices, choice{label: label, value: a.ID, disabled: !a.Available})
 		}
 		return m, nil
 	case rootsMsg:
@@ -640,7 +664,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				v.text += "\n" + v.err.Error()
 			}
 			m.previewBody = v.text
-			m.viewport.SetContent(m.decoratePreview(v.text))
+			m.previewDoc = v.doc
+			m.refreshPreview()
 		}
 		return m, nil
 	case copiedMsg:
@@ -760,6 +785,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	if m.overlay != nil {
+		if m.overlay.kind == "completion" {
+			old := m.input.Value()
+			m.input, cmd = m.input.Update(msg)
+			return m, m.queryEdited(old, cmd)
+		}
 		if len(m.overlay.fields) > 0 {
 			f := m.overlay.field
 			if f >= 0 && f < len(m.overlay.fields) {
@@ -794,6 +824,14 @@ func (m *Model) queryEdited(old string, cmd tea.Cmd) tea.Cmd {
 	}
 	m.edit++
 	m.dirty = true
+	if m.overlay == nil || m.overlay.kind == "completion" {
+		m.showCompletion(false)
+	}
+	if !m.cfg.Search.AutoSearchEmpty {
+		if q, e := domain.ParseQuery(m.input.Value(), m.query); e == nil && !domain.HasSearchIntent(q) {
+			return tea.Batch(cmd, m.idleQuery(q))
+		}
+	}
 	n := m.edit
 	if !m.query.Target.Remote() {
 		return tea.Batch(cmd, tea.Tick(time.Duration(m.cfg.Search.DebounceMS)*time.Millisecond, func(time.Time) tea.Msg { return debounceMsg(n) }))
@@ -814,12 +852,23 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 			m.status = "Canceling…"
 			return nil
 		}
+		if m.usageRunning {
+			m.cancelUsage()
+			m.status = "Directory usage canceled"
+			return nil
+		}
 		return tea.Quit
 	}
 	if m.overlay != nil {
+		if m.overlay.kind == "completion" {
+			return m.completionKey(k)
+		}
 		return m.overlayKey(k)
 	}
 	if m.focus == 0 || m.focus == 3 {
+		if m.focus == 0 && matchesKey(key, m.cfg.Keymap["complete_query"]) {
+			return m.showCompletion(true)
+		}
 		switch key {
 		case "up":
 			return m.selectRow(m.selected - 1)
@@ -831,6 +880,9 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 			m.input.Blur()
 			m.filter.Blur()
 			if old == 0 {
+				if key == "tab" && (m.query.Target.Remote() || (!m.cfg.Search.AutoSearchEmpty && m.run.ID == "" && !m.searching)) {
+					return nil
+				}
 				return m.submit()
 			}
 			return nil
@@ -883,6 +935,10 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		if m.searching {
 			m.cancel()
 		}
+		if m.usageRunning {
+			m.cancelUsage()
+			m.status = "Directory usage canceled"
+		}
 		return nil
 	}
 	if key == "enter" {
@@ -899,7 +955,7 @@ func (m *Model) key(k tea.KeyPressMsg) tea.Cmd {
 		return m.execute(m.resolved.Default)
 	}
 	for id, binding := range m.cfg.Keymap {
-		if key == binding {
+		if matchesKey(key, binding) {
 			return m.command(id)
 		}
 	}
@@ -948,7 +1004,7 @@ func (m *Model) command(id string) tea.Cmd {
 	switch id {
 	case "quit":
 		return tea.Quit
-	case "search":
+	case "search", "insert_search":
 		m.focus = 0
 		return m.input.Focus()
 	case "next_match":
@@ -958,6 +1014,14 @@ func (m *Model) command(id string) tea.Cmd {
 	case "result_filter":
 		m.focus = 3
 		return m.filter.Focus()
+	case "preview_lines":
+		m.cfg.UI.PreviewLineNumbers = !m.cfg.UI.PreviewLineNumbers
+		m.refreshPreview()
+		return nil
+	case "copy_menu":
+		return m.showCopy()
+	case "directory_usage":
+		return m.showUsage()
 	case "preview":
 		m.cfg.UI.Preview = !m.cfg.UI.Preview
 		m.resize()
@@ -983,15 +1047,24 @@ func (m *Model) command(id string) tea.Cmd {
 		return m.historyList()
 	case "sort":
 		m.overlay = &overlay{kind: "sort", title: "Sort · Enter chooses / reverses current column"}
-		for _, s := range []string{"name", "path", "kind", "extension", "size", "modified"} {
+		for _, s := range []string{"name", "path", "kind", "extension", "size", "modified", "usage"} {
 			m.overlay.choices = append(m.overlay.choices, choice{label: s, value: s, checked: s == m.sort})
 		}
 	case "help":
-		m.overlay = &overlay{kind: "help", title: "Help — Esc closes"}
+		return m.showHelp()
 	}
 	return nil
 }
 func (m *Model) execute(id string) tea.Cmd {
+	if id == "copy-menu" {
+		return m.showCopy()
+	}
+	if id == "directory-usage" {
+		return m.showUsage()
+	}
+	if id == "load-actions" {
+		return m.resolveActions()
+	}
 	if m.pendingAction {
 		return nil
 	}
@@ -1007,10 +1080,7 @@ func (m *Model) execute(id string) tea.Cmd {
 		m.pendingAction = true
 		gen := m.gen
 		return tea.Batch(m.accept(), func() tea.Msg {
-			ctx, cancel := context.WithTimeout(m.ctx, 8*time.Second)
-			defer cancel()
-			err := svc.Exists(ctx, *item)
-			return copiedMsg{gen: gen, id: item.ID, value: actions.CopyPath(*item), err: err}
+			return copiedMsg{gen: gen, id: item.ID, value: actions.CopyPath(*item)}
 		})
 	}
 	mode := "suspend"

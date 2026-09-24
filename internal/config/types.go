@@ -1,32 +1,41 @@
 package config
 
 type Config struct {
-	Search    Search            `toml:"search" json:"search"`
-	UI        UI                `toml:"ui" json:"ui"`
-	History   History           `toml:"history" json:"history"`
-	Cache     Cache             `toml:"cache" json:"cache"`
-	Tools     Tools             `toml:"tools" json:"tools"`
-	Roots     []Root            `toml:"roots" json:"roots"`
-	Hosts     []Host            `toml:"hosts" json:"hosts"`
-	Inventory Inventory         `toml:"inventory" json:"inventory"`
-	Actions   []Action          `toml:"actions" json:"actions"`
-	Rules     []Rule            `toml:"rules" json:"rules"`
-	Keymap    map[string]string `toml:"keymap" json:"keymap"`
-	Paths     Paths             `toml:"-" json:"paths"`
+	Search         Search            `toml:"search" json:"search"`
+	UI             UI                `toml:"ui" json:"ui"`
+	DirectoryUsage DirectoryUsage    `toml:"directory_usage" json:"directory_usage"`
+	History        History           `toml:"history" json:"history"`
+	Cache          Cache             `toml:"cache" json:"cache"`
+	Tools          Tools             `toml:"tools" json:"tools"`
+	Roots          []Root            `toml:"roots" json:"roots"`
+	Hosts          []Host            `toml:"hosts" json:"hosts"`
+	Inventory      Inventory         `toml:"inventory" json:"inventory"`
+	Actions        []Action          `toml:"actions" json:"actions"`
+	Rules          []Rule            `toml:"rules" json:"rules"`
+	Keymap         map[string]string `toml:"keymap" json:"keymap"`
+	Paths          Paths             `toml:"-" json:"paths"`
 }
 type Search struct {
-	Sources        []string `toml:"sources" json:"sources"`
-	Hidden         bool     `toml:"hidden" json:"hidden"`
-	Ignored        bool     `toml:"ignored" json:"ignored"`
-	MaxResults     int      `toml:"max_results" json:"max_results"`
-	MaxMatches     int      `toml:"max_matches" json:"max_matches"`
-	TimeoutSeconds int      `toml:"timeout_seconds" json:"timeout_seconds"`
-	DebounceMS     int      `toml:"debounce_ms" json:"debounce_ms"`
+	Sources         []string `toml:"sources" json:"sources"`
+	Hidden          bool     `toml:"hidden" json:"hidden"`
+	Ignored         bool     `toml:"ignored" json:"ignored"`
+	MaxResults      int      `toml:"max_results" json:"max_results"`
+	MaxMatches      int      `toml:"max_matches" json:"max_matches"`
+	TimeoutSeconds  int      `toml:"timeout_seconds" json:"timeout_seconds"`
+	DebounceMS      int      `toml:"debounce_ms" json:"debounce_ms"`
+	AutoSearchEmpty bool     `toml:"auto_search_empty" json:"auto_search_empty"`
 }
 type UI struct {
-	Mouse   bool   `toml:"mouse" json:"mouse"`
-	Preview bool   `toml:"preview" json:"preview"`
-	Color   string `toml:"color" json:"color"`
+	Mouse              bool   `toml:"mouse" json:"mouse"`
+	Preview            bool   `toml:"preview" json:"preview"`
+	Color              string `toml:"color" json:"color"`
+	InitialFocus       string `toml:"initial_focus" json:"initial_focus"`
+	HighlightMatches   bool   `toml:"highlight_matches" json:"highlight_matches"`
+	PreviewLineNumbers bool   `toml:"preview_line_numbers" json:"preview_line_numbers"`
+}
+type DirectoryUsage struct {
+	Concurrency    int `toml:"concurrency" json:"concurrency"`
+	TimeoutSeconds int `toml:"timeout_seconds" json:"timeout_seconds"`
 }
 type History struct {
 	Enabled           bool `toml:"enabled" json:"enabled"`

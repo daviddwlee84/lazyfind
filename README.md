@@ -11,7 +11,7 @@ machine. macOS and Linux are supported. `rga`, `zoxide`, `bat`, `glow`, `yazi`
 and `lazygit` are optional.
 
 ```sh
-go build -o bin/lazyfind .
+make build
 ./bin/lazyfind
 ./bin/lazyfind ~/Projects ~/Documents --query 'orderbook'
 ./bin/lazyfind --host workstation --root /srv/projects
@@ -20,12 +20,17 @@ go build -o bin/lazyfind .
 To install this checkout, run `go install .`. This development version uses
 source builds: update the checkout and run `go install .` again to upgrade.
 There is no published release installer or self-updater yet.
+`make build` embeds the exact local tag, or `dev+COMMIT` with `-dirty` for tracked
+changes. Use `make build VERSION=v0.1.1` for an explicit build identity. Tagged Go
+module installs use embedded module metadata; plain unversioned builds show `dev`.
 
 ## Search and refine
 
 Names and text content are enabled by default. Documents and frequent directories
 are explicit extra sources. Zoxide also supplies root suggestions; its directory
 history is separate from lazyfind's search snapshots.
+Local startup searches the current roots even with an empty query and focuses the
+search field. Both behaviors are configurable; remote searches still require Enter.
 
 ```text
 orderbook
@@ -46,12 +51,19 @@ change those explicit candidates.
 
 One row represents one path on one target, combining all sources and content hits.
 Sort by name, path, kind, extension, size or modification time without searching
-again. The separate fuzzy result filter narrows the current list. Directory size
-is unknown; lazyfind does not recursively calculate it.
+again. The separate fuzzy result filter narrows the current list. Matching text is
+highlighted and previews show line numbers by default.
+
+Directory metadata size remains unknown. Press `u` to measure disk usage for the
+selected directory or visible directories, then sort by the separate usage column.
+This explicitly runs recursive `du` locally or remotely: hidden/ignored children
+are included and symlinks are not followed. Complete measurements are cached for
+the TUI session; use Recalculate to refresh them. They are not saved in history.
 
 | Key | Action |
 | --- | --- |
-| `/` | Focus search; printable keys type normally |
+| `/` / `i` | Focus search; printable keys type normally |
+| Ctrl+Space | Complete query conditions; Enter/Tab inserts a suggestion |
 | Enter in search | Accept query; submit remote search |
 | Enter in results | Run the displayed default action, or select in picker mode |
 | Arrows / j,k | Navigate results; arrows also work while typing |
@@ -60,11 +72,14 @@ is unknown; lazyfind does not recursively calculate it.
 | `s` | Sort; selecting the same column reverses direction |
 | Ctrl+F | Fuzzy filter current results |
 | n / N | Next / previous hit in the selected file |
-| `:` | Searchable action palette |
+| `:` | Searchable Actions popup |
+| `y` | Copy menu for path or supported location formats |
+| `u` | Calculate/recalculate directory disk usage |
 | `H` | History; Enter views, Ctrl+R reruns, Ctrl+P pins, Ctrl+D deletes |
 | Ctrl+R | Run query again |
 | `p` / F2 | Toggle preview / mouse capture |
-| `?` / `q` | Help / quit outside text fields |
+| `L` | Toggle preview line numbers |
+| `?` / `q` | Searchable Help popup / quit outside text fields |
 | Esc / Ctrl+C | Close interaction or cancel search |
 
 Mouse clicks select rows, controls and columns; wheel scrolls the hovered pane.
@@ -87,7 +102,8 @@ actions recheck the actual item.
 Defaults use `~/.config`, `~/.local/state`, and `~/.cache`, including on macOS.
 Unpinned snapshots are kept for at most 90 days and 1,000 runs; pinned snapshots
 survive cleanup. Limits, stored rows and snippets are configurable. Preview cache
-is capped at 256 MiB; clearing it never removes history.
+is capped at 256 MiB; clearing it never removes history. Deleting a snapshot prevents
+late background saves from restoring that run; rerunning creates a fresh ID.
 
 ```sh
 lazyfind config init
@@ -135,7 +151,7 @@ Document hits have extracted-text locations, not original file lines or guarante
 PDF pages. rga retains its own converter/config/cache behavior. Zoxide retains the
 pathname limitations of its public CLI.
 
-See [configuration](docs/configuration.md), [architecture](docs/architecture.md)
+See [configuration](docs/configuration.md), [architecture](docs/architecture.md),
 [verification](docs/verification.md), and [TODO.md](TODO.md).
 
 ## Development

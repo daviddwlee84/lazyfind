@@ -48,6 +48,26 @@ func TestLoadMissingDefaultHasNoSideEffects(t *testing.T) {
 		t.Fatalf("wrong XDG config: %s", cfg.Paths.Config)
 	}
 }
+func TestPatchDefaultsAndExplicitOptOut(t *testing.T) {
+	isolated(t)
+	cfg := Defaults()
+	if !cfg.Search.AutoSearchEmpty || cfg.UI.InitialFocus != "search" || !cfg.UI.HighlightMatches || !cfg.UI.PreviewLineNumbers || cfg.DirectoryUsage.Concurrency != 2 || cfg.DirectoryUsage.TimeoutSeconds != 60 {
+		t.Fatal("patch defaults differ from agreed behavior")
+	}
+	p := filepath.Join(t.TempDir(), "config.toml")
+	writeConfig(t, p, "[search]\nauto_search_empty=false\nmax_results=12\n[ui]\ninitial_focus='results'\nhighlight_matches=false\npreview_line_numbers=false\n[directory_usage]\nconcurrency=1\ntimeout_seconds=2\n")
+	got, e := Load(p)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if got.Search.AutoSearchEmpty || got.UI.InitialFocus != "results" || got.UI.HighlightMatches || got.UI.PreviewLineNumbers || got.Search.MaxResults != 12 || got.DirectoryUsage.Concurrency != 1 {
+		t.Fatal("explicit preferences were lost")
+	}
+	cfg.Keymap["quit"] = "ctrl+@"
+	if Validate(cfg) == nil {
+		t.Fatal("legacy CtrlSpace alias escaped conflict checks")
+	}
+}
 
 func TestCustomActionKeysCannotShadowNavigationOrCommands(t *testing.T) {
 	isolated(t)

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/pelletier/go-toml/v2"
@@ -21,6 +22,8 @@ func DefaultKeymap() map[string]string {
 		"roots": "r", "history": "H", "filters": "f", "preview": "p",
 		"refresh": "ctrl+r", "result_filter": "ctrl+f", "sort": "s",
 		"sources": "S", "mouse": "f2", "next_match": "n", "previous_match": "N",
+		"insert_search": "i", "complete_query": "ctrl+space", "preview_lines": "L",
+		"copy_menu": "y", "directory_usage": "u",
 	}
 }
 
@@ -29,12 +32,13 @@ func DefaultKeymap() map[string]string {
 func Defaults() Config {
 	paths, _ := ResolvePaths("")
 	return Config{
-		Search:  Search{Sources: []string{"names", "text"}, MaxResults: 5000, MaxMatches: 50, TimeoutSeconds: 60, DebounceMS: 200},
-		UI:      UI{Mouse: true, Preview: true, Color: "auto"},
-		History: History{Enabled: true, MaxDays: 90, MaxRuns: 1000, MaxResults: 5000, SnippetsPerItem: 2, SnippetBytes: 512, SnippetTotalBytes: 256 * 1024},
-		Cache:   Cache{MaxBytes: 256 * 1024 * 1024},
-		Tools:   Tools{FD: "fd", RG: "rg", RGA: "rga", Zoxide: "zoxide", SSH: "ssh"},
-		Keymap:  DefaultKeymap(), Paths: paths,
+		Search:         Search{Sources: []string{"names", "text"}, MaxResults: 5000, MaxMatches: 50, TimeoutSeconds: 60, DebounceMS: 200, AutoSearchEmpty: true},
+		UI:             UI{Mouse: true, Preview: true, Color: "auto", InitialFocus: "search", HighlightMatches: true, PreviewLineNumbers: true},
+		DirectoryUsage: DirectoryUsage{Concurrency: 2, TimeoutSeconds: 60},
+		History:        History{Enabled: true, MaxDays: 90, MaxRuns: 1000, MaxResults: 5000, SnippetsPerItem: 2, SnippetBytes: 512, SnippetTotalBytes: 256 * 1024},
+		Cache:          Cache{MaxBytes: 256 * 1024 * 1024},
+		Tools:          Tools{FD: "fd", RG: "rg", RGA: "rga", Zoxide: "zoxide", SSH: "ssh"},
+		Keymap:         DefaultKeymap(), Paths: paths,
 	}
 }
 
@@ -100,6 +104,12 @@ func Load(explicitPath string) (Config, error) {
 }
 
 func Validate(cfg Config) error {
+	if !oneOf(cfg.UI.InitialFocus, "search", "results") {
+		return errors.New("ui.initial_focus must be search or results")
+	}
+	if cfg.DirectoryUsage.Concurrency < 1 || cfg.DirectoryUsage.Concurrency > 16 || cfg.DirectoryUsage.TimeoutSeconds < 1 {
+		return errors.New("directory_usage.concurrency must be 1–16 and timeout_seconds must be positive")
+	}
 	if cfg.Search.MaxResults < 1 || cfg.Search.MaxMatches < 1 || cfg.Search.TimeoutSeconds < 1 || cfg.Search.DebounceMS < 0 {
 		return errors.New("search.max_results, max_matches and timeout_seconds must be positive; debounce_ms must be nonnegative")
 	}
@@ -151,7 +161,7 @@ func Validate(cfg Config) error {
 			return fmt.Errorf("host names must be nonempty and unique: %q", host.Name)
 		}
 		hostNames[host.Name] = true
-		if strings.TrimSpace(host.Alias) == "" || strings.HasPrefix(host.Alias, "-") || strings.ContainsAny(host.Alias, "\x00\r\n") {
+		if strings.TrimSpace(host.Alias) == "" || strings.HasPrefix(host.Alias, "-") || strings.IndexFunc(host.Alias, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
 			return fmt.Errorf("host %q has an invalid SSH alias", host.Name)
 		}
 	}
@@ -164,14 +174,14 @@ func Validate(cfg Config) error {
 				return fmt.Errorf("action %q uses invalid or reserved key %q", action.ID, action.Key)
 			}
 			for name, key := range cfg.Keymap {
-				if action.Key == key {
+				if CanonicalKey(action.Key) == CanonicalKey(key) {
 					return fmt.Errorf("action %q key conflicts with keymap.%s", action.ID, name)
 				}
 			}
-			if previous, ok := actionKeys[action.Key]; ok {
+			if previous, ok := actionKeys[CanonicalKey(action.Key)]; ok {
 				return fmt.Errorf("actions %q and %q share key %q", previous, action.ID, action.Key)
 			}
-			actionKeys[action.Key] = action.ID
+			actionKeys[CanonicalKey(action.Key)] = action.ID
 		}
 		if strings.TrimSpace(action.ID) == "" || customIDs[action.ID] {
 			return fmt.Errorf("custom action IDs must be nonempty and unique: %q", action.ID)
@@ -235,10 +245,10 @@ func validateKeymap(keymap map[string]string) error {
 		if !validKey(key) {
 			return fmt.Errorf("keymap.%s has unsupported key %q", name, key)
 		}
-		if previous, ok := seen[key]; ok {
+		if previous, ok := seen[CanonicalKey(key)]; ok {
 			return fmt.Errorf("keymap.%s and keymap.%s both use %q", previous, name, key)
 		}
-		seen[key] = name
+		seen[CanonicalKey(key)] = name
 	}
 	for name := range defaults {
 		if keymap[name] == "" {
@@ -249,6 +259,9 @@ func validateKeymap(keymap map[string]string) error {
 }
 
 func validKey(key string) bool {
+	if key == "ctrl+space" {
+		return true
+	}
 	if utf8.RuneCountInString(key) == 1 {
 		return true
 	}
@@ -266,6 +279,14 @@ func validKey(key string) bool {
 		}
 	}
 	return false
+}
+
+// Ctrl+Space and NUL/Ctrl+@ are the same physical key in legacy terminals.
+func CanonicalKey(key string) string {
+	if key == "ctrl+@" || key == "ctrl+ " {
+		return "ctrl+space"
+	}
+	return key
 }
 func oneOf(value string, options ...string) bool {
 	for _, option := range options {

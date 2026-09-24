@@ -20,6 +20,7 @@ import (
 
 type actionsMsg struct {
 	gen      int
+	dialog   int
 	id       string
 	resolved actions.Resolved
 	err      error
@@ -42,19 +43,34 @@ func (m *Model) showActions() tea.Cmd {
 	if i == nil {
 		return nil
 	}
-	m.overlay = &overlay{kind: "actions", title: "Actions — Enter executes · Esc closes", input: field("Find action", "")}
+	m.actionsGen++
+	m.overlay = &overlay{kind: "actions", title: "Actions — Enter executes · Esc closes", input: field("Find action", ""), choices: m.commonActions()}
 	m.overlay.input.Focus()
+	if m.historical {
+		m.overlay.choices = append(m.overlay.choices, choice{label: "Load live actions (recheck target)…", value: "load-actions"})
+		return nil
+	}
+	return tea.Batch(m.accept(), m.resolveActions())
+}
+func (m *Model) commonActions() []choice {
+	return []choice{{label: "Copy path / location / reference…", value: "copy-menu"}, {label: "Directory disk usage (recursive, may be slow)…", value: "directory-usage"}}
+}
+func (m *Model) resolveActions() tea.Cmd {
 	m.syncMatchSelection()
+	if m.current() == nil {
+		return nil
+	}
 	item := *m.actionItem()
 	svc := m.actionSvc
 	q := m.query.Text
 	gen := m.gen
-	return tea.Batch(m.accept(), func() tea.Msg {
+	dialog := m.actionsGen
+	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(m.ctx, 8*time.Second)
 		defer cancel()
 		r, e := svc.Resolve(ctx, item, q)
-		return actionsMsg{gen: gen, id: item.ID, resolved: r, err: e}
-	})
+		return actionsMsg{gen: gen, dialog: dialog, id: item.ID, resolved: r, err: e}
+	}
 }
 func (m *Model) showSources() {
 	o := &overlay{kind: "sources", title: "Sources — Space toggles · Enter applies"}
@@ -76,7 +92,7 @@ func (m *Model) showFilters() tea.Cmd {
 		maxS = strconv.FormatInt(*f.MaxSize, 10) + "B"
 	}
 	o := &overlay{kind: "filters", title: "Filters — Tab field · Enter apply · Esc cancel"}
-	labels := []string{"Type (file,dir,symlink)", "Extensions (comma-separated)", "Modified within (7d)", "After (inclusive date)", "Before (exclusive date)", "Minimum size", "Maximum size", "Maximum depth (0=unlimited)", "Hidden (true/false)", "Ignored (true/false)", "Regex (true/false)", "Full path (true/false)"}
+	labels := []string{"Type (file,dir,symlink)", "Extensions (comma-separated)", "Modified within (7d)", "After (inclusive date)", "Before (exclusive date)", "Minimum size", "Maximum size", "Maximum depth (0=unlimited)", "Include hidden files/folders", "Include ignored files/folders", "Use regex", "Match full path"}
 	values := []string{strings.Join(f.Kinds, ","), strings.Join(f.Extensions, ","), f.ModifiedWithin, f.After, f.Before, minS, maxS, strconv.Itoa(f.Depth), strconv.FormatBool(f.Hidden), strconv.FormatBool(f.Ignored), strconv.FormatBool(m.query.Regex), strconv.FormatBool(m.query.FullPath)}
 	for i, l := range labels {
 		o.fields = append(o.fields, field(l, values[i]))
@@ -172,32 +188,20 @@ func (m *Model) overlayKey(k tea.KeyPressMsg) tea.Cmd {
 	o := m.overlay
 	key := k.String()
 	if key == "esc" {
-		m.overlay = nil
+		m.overlay = o.parent
 		m.pressed = ""
-		return nil
-	}
-	if o.kind == "help" {
-		if key == "q" {
-			m.overlay = nil
-		}
 		return nil
 	}
 	if o.kind == "delete-history" {
 		if key == "enter" {
-			id := o.choices[0].value
-			m.overlay = nil
-			cfg := m.cfg
-			return func() tea.Msg {
-				e := history.New(cfg).Delete(m.ctx, id)
-				if e != nil {
-					return noticeMsg(e.Error())
-				}
-				return noticeMsg("History entry deleted")
-			}
+			return m.activateChoice()
 		}
-		return nil
 	}
 	if len(o.fields) > 0 && o.field >= 0 {
+		if o.kind == "filters" && o.field >= 8 && key == " " {
+			o.fields[o.field].SetValue(strconv.FormatBool(o.fields[o.field].Value() != "true"))
+			return nil
+		}
 		switch key {
 		case "tab", "shift+tab":
 			o.fields[o.field].Blur()
@@ -229,6 +233,9 @@ func (m *Model) overlayKey(k tea.KeyPressMsg) tea.Cmd {
 				o.field = len(o.fields) - 1
 				return o.fields[o.field].Focus()
 			}
+		}
+		if o.kind == "filters" && o.field >= 8 {
+			return nil
 		}
 		var cmd tea.Cmd
 		o.fields[o.field], cmd = o.fields[o.field].Update(k)
@@ -265,8 +272,7 @@ func (m *Model) overlayKey(k tea.KeyPressMsg) tea.Cmd {
 			cfg := m.cfg
 			gen := m.historyGen
 			if key == "ctrl+d" {
-				m.overlay = &overlay{kind: "delete-history", title: "Delete this snapshot? Enter deletes · Esc cancels", choices: []choice{{label: cs[o.selected].label, value: id}}}
-				return nil
+				return m.confirmDelete()
 			}
 			if key == "ctrl+r" {
 				return func() tea.Msg {
@@ -290,7 +296,7 @@ func (m *Model) overlayKey(k tea.KeyPressMsg) tea.Cmd {
 			}
 		}
 	}
-	if o.kind == "actions" || o.kind == "history" {
+	if o.kind == "actions" || o.kind == "history" || o.kind == "help" {
 		old := o.input.Value()
 		var cmd tea.Cmd
 		o.input, cmd = o.input.Update(k)
@@ -336,7 +342,34 @@ func (m *Model) activateChoice() tea.Cmd {
 		return nil
 	}
 	c := cs[o.selected]
+	if c.disabled {
+		m.status = "This option is unavailable"
+		return nil
+	}
 	switch o.kind {
+	case "completion":
+		return m.acceptCompletion()
+	case "help":
+		return nil
+	case "copy":
+		return m.copyChoice(c.value)
+	case "usage":
+		if c.value == "cancel" {
+			m.cancelUsage()
+			m.overlay = nil
+			return nil
+		}
+		items := o.usageItems
+		if strings.HasSuffix(c.value, "visible") {
+			items = o.usageVisible
+		}
+		return m.startUsage(items, strings.HasPrefix(c.value, "refresh-"))
+	case "delete-history":
+		if c.value == "cancel" {
+			m.overlay = o.parent
+			return nil
+		}
+		return m.deleteHistory(strings.TrimPrefix(c.value, "delete:"), o.parent)
 	case "sort":
 		if m.sort == c.value {
 			m.desc = !m.desc
