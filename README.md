@@ -10,7 +10,18 @@ Build with Go 1.26+. Search requires `fd` (or `fdfind`) and `rg` on the selected
 machine. macOS and Linux are supported. `rga`, `zoxide`, `bat`, `glow`, `yazi`
 and `lazygit` are optional.
 
+Install the tagged source version:
+
 ```sh
+go install github.com/daviddwlee84/lazyfind@v0.1.1
+lazyfind
+```
+
+Or build a checkout of [the public repository](https://github.com/daviddwlee84/lazyfind):
+
+```sh
+git clone https://github.com/daviddwlee84/lazyfind.git
+cd lazyfind
 make build
 ./bin/lazyfind
 ./bin/lazyfind ~/Projects ~/Documents --query 'orderbook'
@@ -19,7 +30,7 @@ make build
 
 To install this checkout, run `go install .`. This development version uses
 source builds: update the checkout and run `go install .` again to upgrade.
-There is no published release installer or self-updater yet.
+Tags provide source versions; prebuilt binaries and a self-updater are not shipped.
 `make build` embeds the exact local tag, or `dev+COMMIT` with `-dirty` for tracked
 changes. Use `make build VERSION=v0.1.1` for an explicit build identity. Tagged Go
 module installs use embedded module metadata; plain unversioned builds show `dev`.
