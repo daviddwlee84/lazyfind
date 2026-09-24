@@ -1,0 +1,13 @@
+{
+  "sessions": {
+    "01a0d2dc-dfc2-7611-a6ec-9ce53d2a3b2a": {
+      "user_message_count": 6,
+      "agent_message_count": 207,
+      "start_timestamp": "2026-09-24T10:09:16.289Z",
+      "end_timestamp": "2026-09-24T12:49:44.277Z",
+      "markdown_size_bytes": 566889,
+      "provider": "codex",
+      "last_updated": "2026-09-24T12:49:49Z"
+    }
+  }
+}
