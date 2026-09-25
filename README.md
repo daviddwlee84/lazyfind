@@ -12,7 +12,7 @@ lazyfind --version
 lazyfind upgrade --check
 ```
 
-**v0.1.2** adds macOS/Linux amd64/arm64 binary releases and the personal Homebrew
+**v0.1.3** adds macOS/Linux amd64/arm64 binary releases and the personal Homebrew
 formula. Go is optional for binary installs; runtime backends remain separate.
 See [installation, completion and owner-aware upgrades](docs/distribution.md).
 [MIT license](LICENSE).
@@ -26,7 +26,7 @@ and `lazygit` are optional.
 Install the tagged source version:
 
 ```sh
-go install github.com/daviddwlee84/lazyfind@v0.1.2
+go install github.com/daviddwlee84/lazyfind@v0.1.3
 lazyfind
 ```
 
