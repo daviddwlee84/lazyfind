@@ -1,17 +1,14 @@
 # Release distribution
 
-Status: deferred
+Status: completed 2026-09-25 in [v0.1.2](https://github.com/daviddwlee84/lazyfind/releases/tag/v0.1.2).
 
-## Context and next implementation
+macOS/Linux amd64/arm64 archives, checksums, a filtered source archive and shell
+completions are published. The personal tap centrally validates and packages the
+binaries. `upgrade --check` is read-only; explicit upgrade delegates a verified
+Homebrew owner. Standalone copies keep the external installation path, including
+chezmoi's `just upgrade-personal`; no download failure falls back to compilation.
 
-The development entry point is go install . and local Makefile builds. Future
-versioned user installations should expose version information, installation owner,
-upgrade --check and an owning-manager upgrade path. Do not silently switch between
-Homebrew/source/release-asset installations. Plan package signatures/checksums,
-macOS/Linux architecture matrix, release notes and upgrade verification together.
-Publishing artifacts is a separate action from implementing the CLI.
-
-## Acceptance
-
-Use the shared QuerySpec, ResultView, history and action boundaries. Include
-provider-specific failure and cancellation tests and document unsupported behavior.
+Native Go/PTY CI, independent source/module archive builds, public fixed-tag and
+`@latest` Go installs, and owner/changed-target/failure fixtures were verified.
+The application is MIT licensed. The search/history/action contracts were not
+changed by packaging. See [current distribution instructions](../docs/distribution.md).

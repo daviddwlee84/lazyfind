@@ -13,8 +13,9 @@ belongs in the normal code and tests. Priorities are independent of effort.
 
 ## P3
 - [ ] **[L] Multi-host search** — Concurrent targets, per-host progress, partial failures and merged results. → [research](backlog/multi-host.md)
-- [ ] **[M] Release distribution** — Versioned releases, supported installers and a discoverable ownership-aware upgrade path. → [research](backlog/distribution.md)
 
 ## P?
 
 ## Done
+
+- ✅ [2026-09-25] [P3/M] Release distribution — Published v0.1.2 binary/source assets, MIT licensing, completions and a verified Homebrew upgrade/check entry point.
