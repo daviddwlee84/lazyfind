@@ -2,3 +2,8 @@
 *.test
 /coverage.out
 .DS_Store
+
+# Release artifacts
+/dist/
+/completions/
+__pycache__/

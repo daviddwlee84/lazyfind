@@ -26,3 +26,9 @@ backlog/ for large or exploratory work. Avoid parallel ROADMAP/IDEAS lists.
 Capture non-obvious resolved failures under pitfalls/ with symptom-based titles,
 verbatim errors, cause, fix and prevention. Repository memory is not runtime config
 and must not contain credentials or personal host values.
+
+## Binary distribution
+
+See `docs/distribution.md`. Run GoReleaser config/snapshot checks and
+`scripts/check-distribution.py` before tagging. Preserve immutable releases and
+source/module exclusions. Backend setup is separate from installing this CLI.

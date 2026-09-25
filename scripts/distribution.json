@@ -1,0 +1,14 @@
+{
+  "main": ".",
+  "version_symbol": "main.version",
+  "required": [
+    "main.go"
+  ],
+  "smoke": [
+    [
+      "upgrade",
+      "--check",
+      "--json"
+    ]
+  ]
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/daviddwlee84/lazyfind/internal/managedupgrade"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -137,6 +138,7 @@ func New(version string) *cobra.Command {
 		}
 		return runError(r)
 	}
+	root.AddCommand(managedupgrade.NewCommand(managedupgrade.Product{Binary: "lazyfind", Module: "github.com/daviddwlee84/lazyfind", Main: "github.com/daviddwlee84/lazyfind"}))
 	root.AddCommand(sc)
 	popt := &options{}
 	var print0, dirs bool

@@ -4,6 +4,19 @@ A search-first TUI over **fd, ripgrep, ripgrep-all and zoxide**. Start with a
 keyword, refine the scope and filters, inspect one row per file, then choose
 the right downstream tool. Search locally or on one SSH host at a time.
 
+## Install / 安裝
+
+```sh
+brew install daviddwlee84/tap/lazyfind
+lazyfind --version
+lazyfind upgrade --check
+```
+
+**v0.1.2** adds macOS/Linux amd64/arm64 binary releases and the personal Homebrew
+formula. Go is optional for binary installs; runtime backends remain separate.
+See [installation, completion and owner-aware upgrades](docs/distribution.md).
+[MIT license](LICENSE).
+
 ## Run
 
 Build with Go 1.26+. Search requires `fd` (or `fdfind`) and `rg` on the selected
@@ -13,7 +26,7 @@ and `lazygit` are optional.
 Install the tagged source version:
 
 ```sh
-go install github.com/daviddwlee84/lazyfind@v0.1.1
+go install github.com/daviddwlee84/lazyfind@v0.1.2
 lazyfind
 ```
 
@@ -28,9 +41,10 @@ make build
 ./bin/lazyfind --host workstation --root /srv/projects
 ```
 
-To install this checkout, run `go install .`. This development version uses
-source builds: update the checkout and run `go install .` again to upgrade.
-Tags provide source versions; prebuilt binaries and a self-updater are not shipped.
+To install this checkout, run `go install .`. For checkout builds,
+update the checkout and run `go install .` again to upgrade.
+Prebuilt binaries and verified Homebrew upgrades are also available; see
+[distribution](docs/distribution.md).
 `make build` embeds the exact local tag, or `dev+COMMIT` with `-dirty` for tracked
 changes. Use `make build VERSION=v0.1.1` for an explicit build identity. Tagged Go
 module installs use embedded module metadata; plain unversioned builds show `dev`.
